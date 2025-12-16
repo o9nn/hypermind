@@ -1,0 +1,433 @@
+(*
+ * HyperMind System State Formal Specification
+ * Z++ Specification of System-Wide State and Actor State
+ *
+ * This module defines the complete system state including all actors,
+ * their internal state, queues, and global system invariants.
+ *)
+
+(* Import data model definitions *)
+include data_model
+
+(* ============================================ *)
+(* Queue Structures                            *)
+(* ============================================ *)
+
+(*
+ * PriorityQueue - Priority-based message queue
+ * Messages with lower priority values are processed first
+ *)
+schema PriorityQueue[T]
+  items: seq T             (* Queue items *)
+  priorities: seq ℕ        (* Corresponding priorities *)
+  capacity: ℕ              (* Maximum queue capacity *)
+where
+  (* Items and priorities have same length *)
+  #items = #priorities
+  
+  (* Queue respects capacity constraint *)
+  #items ≤ capacity
+  
+  (* Items are ordered by priority (ascending) *)
+  (∀ i, j : 1..#priorities | i < j @ priorities(i) ≤ priorities(j))
+  
+  (* Capacity is positive *)
+  capacity > 0
+end
+
+(*
+ * Queue state predicates
+ *)
+schema QueuePredicates[T]
+  queue: PriorityQueue[T]
+where
+  is_empty ⇔ #queue.items = 0
+  is_full ⇔ #queue.items = queue.capacity
+  has_items ⇔ #queue.items > 0
+end
+
+(* ============================================ *)
+(* NeuralReactor State                         *)
+(* ============================================ *)
+
+(*
+ * NeuralReactor represents the complete state of a single reactor actor.
+ * It manages sessions, arrays, and processes messages from multiple queues.
+ *)
+schema NeuralReactor
+  reactor_id: ID                          (* Unique reactor identifier *)
+  
+  (* State Maps *)
+  session_map: SessionMap                  (* Active sessions *)
+  ndarray_map: NDArrayMap                  (* Cached NDArrays *)
+  
+  (* Communication Queues *)
+  internal_queue: PriorityQueue[Message]   (* Self-messages *)
+  external_queue: PriorityQueue[Message]   (* External messages *)
+  command_queue: PriorityQueue[Command]    (* Command queue *)
+  
+  (* Event Streams *)
+  gpu_queue: seq Event                     (* GPU event stream *)
+  db_queue: seq Event                      (* Database event stream *)
+  
+  (* Reactor Configuration *)
+  rank: Rank                               (* Reactor rank *)
+  max_sessions: ℕ                          (* Max concurrent sessions *)
+  
+  (* Execution State *)
+  is_running: 𝔹                            (* Whether reactor is active *)
+  processed_messages: ℕ                    (* Total messages processed *)
+  
+where
+  (* Valid reactor ID *)
+  reactor_id > 0
+  
+  (* Session count respects maximum *)
+  #(dom session_map) ≤ max_sessions
+  
+  (* Queue capacities are reasonable *)
+  internal_queue.capacity > 0 ∧
+  external_queue.capacity > 0 ∧
+  command_queue.capacity > 0
+  
+  (* GPU and DB queues are bounded *)
+  #gpu_queue ≤ 1000 ∧ #db_queue ≤ 1000
+  
+  (* All messages in queues reference this reactor *)
+  (∀ m : ran internal_queue.items @ m.receiver_id = reactor_id) ∧
+  (∀ m : ran external_queue.items @ m.receiver_id = reactor_id)
+  
+  (* All sessions in map are in valid states *)
+  (∀ h : dom session_map @ 
+    session_map(h).state ≥ 0 ∧
+    session_map(h).pending_operations ≥ 0)
+  
+  (* Hash map invariants hold *)
+  HashMapInvariants(session_map, ndarray_map)
+  
+  (* Max sessions is positive *)
+  max_sessions > 0
+  
+  (* Processed message count is non-negative *)
+  processed_messages ≥ 0
+end
+
+(* ============================================ *)
+(* SessionInitiator State                      *)
+(* ============================================ *)
+
+(*
+ * SessionInitiator orchestrates neural network computation sessions
+ * by distributing work to NeuralReactors.
+ *)
+schema SessionInitiator
+  initiator_id: ID                        (* Unique initiator identifier *)
+  
+  (* Session Management *)
+  active_sessions: ℙ ID                   (* Currently active session IDs *)
+  completed_sessions: ℙ ID                (* Completed session IDs *)
+  failed_sessions: ℙ ID                   (* Failed session IDs *)
+  
+  (* Reactor Pool *)
+  available_reactors: seq ID              (* Available reactor IDs *)
+  busy_reactors: ℙ ID                     (* Busy reactor IDs *)
+  
+  (* Network Configuration *)
+  layer_sequence: seq ID                  (* Network layer order *)
+  
+  (* Execution State *)
+  is_running: 𝔹                            (* Whether initiator is active *)
+  sessions_created: ℕ                     (* Total sessions created *)
+  
+where
+  (* Valid initiator ID *)
+  initiator_id > 0
+  
+  (* Sessions are properly partitioned *)
+  active_sessions ∩ completed_sessions = ∅
+  active_sessions ∩ failed_sessions = ∅
+  completed_sessions ∩ failed_sessions = ∅
+  
+  (* Busy reactors are subset of available *)
+  busy_reactors ⊆ ran available_reactors
+  
+  (* All reactors in pool are valid *)
+  (∀ r : ran available_reactors @ r > 0)
+  
+  (* No duplicate reactors *)
+  #available_reactors = #(ran available_reactors)
+  
+  (* Layer sequence is non-empty *)
+  #layer_sequence > 0
+  
+  (* All layers in sequence are valid *)
+  (∀ l : ran layer_sequence @ l > 0)
+  
+  (* Sessions created count is valid *)
+  sessions_created = #active_sessions + #completed_sessions + #failed_sessions
+end
+
+(* ============================================ *)
+(* GPU Stream State                            *)
+(* ============================================ *)
+
+(*
+ * GPUStream represents the state of GPU computation resources
+ * including pending operations and completed results.
+ *)
+schema GPUStream
+  stream_id: ID                           (* Unique stream identifier *)
+  
+  (* Operation Tracking *)
+  pending_ops: ℙ ID                       (* Pending operation IDs *)
+  completed_ops: ℙ ID                     (* Completed operation IDs *)
+  
+  (* Resource State *)
+  device_id: ℕ                            (* GPU device number *)
+  memory_allocated: ℕ                     (* Bytes allocated *)
+  memory_capacity: ℕ                      (* Total GPU memory *)
+  
+  (* Operation Queue *)
+  operation_queue: seq ID                 (* Queued operations *)
+  
+  (* State *)
+  is_active: 𝔹                            (* Stream is active *)
+  
+where
+  (* Valid stream ID *)
+  stream_id > 0
+  
+  (* Operations are properly partitioned *)
+  pending_ops ∩ completed_ops = ∅
+  
+  (* Memory constraint *)
+  memory_allocated ≤ memory_capacity
+  
+  (* Valid device ID *)
+  device_id ≥ 0
+  
+  (* All queued operations are pending *)
+  ran operation_queue ⊆ pending_ops
+  
+  (* Memory values are non-negative *)
+  memory_capacity > 0
+end
+
+(* ============================================ *)
+(* Database Pipe State                         *)
+(* ============================================ *)
+
+(*
+ * DatabasePipe represents the state of database connection
+ * including pending queries and result buffer.
+ *)
+schema DatabasePipe
+  pipe_id: ID                             (* Unique pipe identifier *)
+  
+  (* Connection State *)
+  connection_string: String               (* Database connection *)
+  is_connected: 𝔹                         (* Connection status *)
+  
+  (* Operation Tracking *)
+  pending_queries: ℙ ID                   (* Pending query IDs *)
+  completed_queries: ℙ ID                 (* Completed query IDs *)
+  
+  (* Query Queue *)
+  query_queue: seq ID                     (* Queued queries *)
+  
+  (* Buffer *)
+  result_buffer: seq Event                (* Result event buffer *)
+  buffer_capacity: ℕ                      (* Max buffer size *)
+  
+where
+  (* Valid pipe ID *)
+  pipe_id > 0
+  
+  (* Connection string is non-empty when connected *)
+  is_connected ⇒ connection_string ≠ ""
+  
+  (* Queries are properly partitioned *)
+  pending_queries ∩ completed_queries = ∅
+  
+  (* All queued queries are pending *)
+  ran query_queue ⊆ pending_queries
+  
+  (* Result buffer respects capacity *)
+  #result_buffer ≤ buffer_capacity
+  
+  (* Buffer capacity is positive *)
+  buffer_capacity > 0
+end
+
+(* ============================================ *)
+(* Global System State                         *)
+(* ============================================ *)
+
+(*
+ * SystemState represents the complete state of the HyperMind system
+ * including all actors, external resources, and global invariants.
+ *)
+schema SystemState
+  (* Actors *)
+  reactors: ℙ NeuralReactor               (* All reactor actors *)
+  initiators: ℙ SessionInitiator          (* All initiator actors *)
+  
+  (* External Resources *)
+  gpu_streams: ℙ GPUStream                (* GPU computation streams *)
+  db_pipes: ℙ DatabasePipe                (* Database connections *)
+  
+  (* Global State *)
+  network_topology: ID ⇸ ℙ ID             (* Reactor connectivity graph *)
+  layer_registry: ID ⇸ Layer              (* All network layers *)
+  
+  (* System Configuration *)
+  max_reactors: ℕ                         (* Maximum reactor instances *)
+  system_time: ℕ                          (* Current system timestamp *)
+  
+where
+  (* All reactor IDs are unique *)
+  (∀ r1, r2 : reactors | r1 ≠ r2 @ r1.reactor_id ≠ r2.reactor_id)
+  
+  (* All initiator IDs are unique *)
+  (∀ i1, i2 : initiators | i1 ≠ i2 @ i1.initiator_id ≠ i2.initiator_id)
+  
+  (* Reactor count respects maximum *)
+  #reactors ≤ max_reactors
+  
+  (* Network topology references valid reactors *)
+  dom network_topology ⊆ {r : reactors @ r.reactor_id}
+  (∀ id : dom network_topology @ 
+    ran network_topology(id) ⊆ {r : reactors @ r.reactor_id})
+  
+  (* All GPU streams have unique IDs *)
+  (∀ g1, g2 : gpu_streams | g1 ≠ g2 @ g1.stream_id ≠ g2.stream_id)
+  
+  (* All DB pipes have unique IDs *)
+  (∀ d1, d2 : db_pipes | d1 ≠ d2 @ d1.pipe_id ≠ d2.pipe_id)
+  
+  (* Layer registry contains valid layers *)
+  (∀ l : ran layer_registry @ 
+    l.input_size > 0 ∧ l.output_size > 0)
+  
+  (* At least one reactor exists if system is operational *)
+  #initiators > 0 ⇒ #reactors > 0
+  
+  (* System time is monotonically increasing *)
+  system_time ≥ 0
+  
+  (* Max reactors is positive *)
+  max_reactors > 0
+end
+
+(* ============================================ *)
+(* Distributed System Invariants               *)
+(* ============================================ *)
+
+(*
+ * Global invariants that ensure system consistency in distributed setting
+ *)
+schema DistributedInvariants
+  SystemState
+where
+  (* No session is simultaneously in multiple reactors with different states *)
+  (∀ r1, r2 : reactors | r1 ≠ r2 @ 
+    (∀ h1 : dom r1.session_map @ 
+      (∀ h2 : dom r2.session_map @ 
+        r1.session_map(h1).session_id = r2.session_map(h2).session_id ⇒
+        r1.session_map(h1).state = r2.session_map(h2).state)))
+  
+  (* Message receiver references valid reactor *)
+  (∀ r : reactors @ 
+    (∀ m : ran r.external_queue.items @ 
+      (∃ sender : reactors @ sender.reactor_id = m.sender_id)))
+  
+  (* GPU operations don't exceed stream capacity *)
+  (∀ g : gpu_streams @ 
+    #g.pending_ops ≤ 1000)
+  
+  (* Database connections are properly managed *)
+  (∀ d : db_pipes @ 
+    d.is_connected ⇒ #d.pending_queries < 1000)
+end
+
+(* ============================================ *)
+(* Session Consistency                         *)
+(* ============================================ *)
+
+(*
+ * Ensures session state consistency across the distributed system
+ *)
+schema SessionConsistency
+  SystemState
+where
+  (* Each active session exists in at least one reactor *)
+  (∀ i : initiators @ 
+    (∀ s : i.active_sessions @ 
+      (∃ r : reactors @ 
+        (∃ h : dom r.session_map @ 
+          r.session_map(h).session_id = s))))
+  
+  (* Completed sessions are not in any reactor *)
+  (∀ i : initiators @ 
+    (∀ s : i.completed_sessions @ 
+      (∀ r : reactors @ 
+        (∀ h : dom r.session_map @ 
+          r.session_map(h).session_id ≠ s))))
+  
+  (* Session layer index is within network bounds *)
+  (∀ r : reactors @ 
+    (∀ h : dom r.session_map @ 
+      (∃ i : initiators @ 
+        r.session_map(h).layer_index < #i.layer_sequence)))
+end
+
+(* ============================================ *)
+(* Resource Allocation Invariants              *)
+(* ============================================ *)
+
+(*
+ * Ensures proper resource allocation and prevents resource leaks
+ *)
+schema ResourceInvariants
+  SystemState
+where
+  (* Total GPU memory allocation is bounded *)
+  (∑{g : gpu_streams @ g.memory_allocated}) ≤ 
+    (∑{g : gpu_streams @ g.memory_capacity})
+  
+  (* Each reactor's NDArrays fit in available GPU memory *)
+  (∀ r : reactors @ 
+    (∃ g : gpu_streams @ 
+      (∑{h : dom r.ndarray_map | r.ndarray_map(h).device = GPU @ 
+        #r.ndarray_map(h).data * 4}) ≤ g.memory_capacity))
+  
+  (* Queue capacities prevent unbounded growth *)
+  (∀ r : reactors @ 
+    #r.internal_queue.items + #r.external_queue.items < 10000)
+end
+
+(* ============================================ *)
+(* Liveness Properties                         *)
+(* ============================================ *)
+
+(*
+ * Properties ensuring system progress and preventing deadlock
+ *)
+schema LivenessProperties
+  SystemState
+where
+  (* If there are pending messages, at least one reactor is running *)
+  ((∃ r : reactors @ #r.external_queue.items > 0) ⇒
+   (∃ r : reactors @ r.is_running))
+  
+  (* If there are active sessions, at least one initiator is running *)
+  ((∃ i : initiators @ #i.active_sessions > 0) ⇒
+   (∃ i : initiators @ i.is_running))
+  
+  (* GPU streams with pending operations are active *)
+  (∀ g : gpu_streams @ #g.pending_ops > 0 ⇒ g.is_active)
+  
+  (* Connected DB pipes with pending queries process them *)
+  (∀ d : db_pipes @ 
+    d.is_connected ∧ #d.pending_queries > 0 ⇒ #d.query_queue > 0)
+end

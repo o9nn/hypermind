@@ -1,0 +1,347 @@
+(*
+ * HyperMind Data Model Formal Specification
+ * Z++ Specification of Core Data Structures
+ *
+ * This module defines the foundational data types and structures
+ * used throughout the HyperMind distributed neural network framework.
+ *)
+
+(* ============================================ *)
+(* Basic Types and Type Aliases                 *)
+(* ============================================ *)
+
+(* Unique identifier type for sessions, arrays, and other entities *)
+ID == ℕ
+
+(* Hash type for efficient lookup in hash maps *)
+hash_t == ℕ
+
+(* Message type identifier *)
+MessageType == ℙ String
+
+(* Processing rank hierarchy *)
+Rank ::= worker | manager | director
+
+(* ============================================ *)
+(* NDArray - Numerical Data Array              *)
+(* ============================================ *)
+
+(*
+ * NDArray represents a multi-dimensional numerical array used for
+ * storing neural network activations, weights, and gradients.
+ * This is the fundamental data structure for computation.
+ *)
+schema NDArray
+  shape: seq ℕ             (* Dimensions of the array *)
+  data: seq ℝ              (* Flattened array data *)
+  device: Device           (* Storage location (CPU, GPU) *)
+  dtype: DataType          (* Numerical data type *)
+where
+  (* Shape must be non-empty and all dimensions positive *)
+  #shape > 0 ∧ (∀ i : 1..#shape @ shape(i) > 0)
+  
+  (* Data size must match product of shape dimensions *)
+  #data = ∏{i : 1..#shape @ shape(i)}
+  
+  (* Data must be finite values *)
+  (∀ i : 1..#data @ ¬isInfinite(data(i)) ∧ ¬isNaN(data(i)))
+end
+
+(* Device enumeration for array storage location *)
+Device ::= CPU | GPU | Distributed
+
+(* Supported numerical data types *)
+DataType ::= float16 | float32 | float64 | int8 | int16 | int32 | int64
+
+(* ============================================ *)
+(* SessionState - Session Execution State      *)
+(* ============================================ *)
+
+(*
+ * SessionState tracks the execution state of a neural network computation
+ * session. Each session represents a forward/backward pass through the network.
+ *)
+schema SessionState
+  session_id: ID           (* Unique session identifier *)
+  state: ℤ                 (* Current state code *)
+  layer_index: ℕ           (* Current layer being processed *)
+  completed_layers: ℙ ℕ    (* Set of completed layer indices *)
+  pending_operations: ℕ    (* Count of pending async operations *)
+where
+  (* State code is non-negative *)
+  state ≥ 0
+  
+  (* Layer index is within valid range *)
+  layer_index ≥ 0
+  
+  (* Completed layers don't include current or future layers *)
+  (∀ l : completed_layers @ l < layer_index)
+  
+  (* Pending operations count is non-negative *)
+  pending_operations ≥ 0
+end
+
+(* Session state codes *)
+SessionStateCode ::= 
+  | INIT          (* Session initialized *)
+  | PROCESSING    (* Session actively processing *)
+  | WAITING_GPU   (* Waiting for GPU operation *)
+  | WAITING_DB    (* Waiting for database operation *)
+  | COMPLETED     (* Session completed successfully *)
+  | FAILED        (* Session failed with error *)
+
+(* ============================================ *)
+(* Layer - Neural Network Layer Specification  *)
+(* ============================================ *)
+
+(*
+ * Layer represents a single layer in the neural network with its
+ * configuration and computational properties.
+ *)
+schema Layer
+  layer_id: ID             (* Unique layer identifier *)
+  input_size: ℕ            (* Input dimension *)
+  output_size: ℕ           (* Output dimension *)
+  activation: Activation   (* Activation function *)
+  weights: NDArray         (* Layer weight matrix *)
+  bias: NDArray           (* Layer bias vector *)
+where
+  (* Dimensions must be positive *)
+  input_size > 0 ∧ output_size > 0
+  
+  (* Weight matrix shape must match layer dimensions *)
+  weights.shape = ⟨output_size, input_size⟩
+  
+  (* Bias vector shape must match output dimension *)
+  bias.shape = ⟨output_size⟩
+  
+  (* Weights and bias must be on same device *)
+  weights.device = bias.device
+end
+
+(* Supported activation functions *)
+Activation ::= ReLU | Sigmoid | Tanh | Linear | Softmax
+
+(* ============================================ *)
+(* LayerProxy - Layer Reference                *)
+(* ============================================ *)
+
+(*
+ * LayerProxy provides an indirection to Layer objects, enabling
+ * lazy loading and distributed layer references across reactors.
+ *)
+schema LayerProxy
+  layer_ref: ID            (* Reference to actual layer *)
+  reactor_id: ID           (* Owning reactor identifier *)
+  is_local: 𝔹              (* Whether layer is on local reactor *)
+where
+  (* Valid layer reference *)
+  layer_ref > 0
+  
+  (* Valid reactor identifier *)
+  reactor_id > 0
+end
+
+(* ============================================ *)
+(* Message - Inter-Actor Communication         *)
+(* ============================================ *)
+
+(*
+ * Message represents a communication unit between actors in the system.
+ * Messages carry data and control information between NeuralReactors.
+ *)
+schema Message
+  message_id: ID           (* Unique message identifier *)
+  msg_type: MessageType    (* Type/category of message *)
+  sender_id: ID            (* Sending actor identifier *)
+  receiver_id: ID          (* Receiving actor identifier *)
+  payload: seq Byte        (* Serialized message payload *)
+  timestamp: ℕ             (* Creation timestamp *)
+  priority: ℕ              (* Message priority (0 = highest) *)
+where
+  (* Valid sender and receiver *)
+  sender_id > 0 ∧ receiver_id > 0
+  
+  (* Message type is non-empty *)
+  msg_type ≠ ""
+  
+  (* Timestamp is valid *)
+  timestamp > 0
+  
+  (* Priority is in valid range *)
+  priority ≥ 0 ∧ priority ≤ 10
+end
+
+(* Common message types in the system *)
+MESSAGE_TYPES == {
+  "ACTIVATE",        (* Activation computation request *)
+  "GRADIENT",        (* Gradient computation request *)
+  "WEIGHT_UPDATE",   (* Weight update notification *)
+  "SESSION_START",   (* Session initiation *)
+  "SESSION_END",     (* Session completion *)
+  "ERROR",           (* Error notification *)
+  "SYNC"            (* Synchronization message *)
+}
+
+(* ============================================ *)
+(* Event - External System Events              *)
+(* ============================================ *)
+
+(*
+ * Event represents asynchronous events from external systems like
+ * GPU or database operations completing.
+ *)
+schema Event
+  event_id: ID             (* Unique event identifier *)
+  event_type: EventType    (* Type of event *)
+  source: EventSource      (* Source system *)
+  data: seq Byte           (* Event data payload *)
+  timestamp: ℕ             (* Event occurrence timestamp *)
+where
+  (* Valid event identifier *)
+  event_id > 0
+  
+  (* Timestamp is valid *)
+  timestamp > 0
+end
+
+(* Event type enumeration *)
+EventType ::= 
+  | GPU_COMPLETE      (* GPU operation completed *)
+  | GPU_ERROR         (* GPU operation failed *)
+  | DB_COMPLETE       (* Database operation completed *)
+  | DB_ERROR          (* Database operation failed *)
+  | NETWORK_RECEIVE   (* Network message received *)
+  | NETWORK_ERROR     (* Network error occurred *)
+
+(* Event source enumeration *)
+EventSource ::= GPUStream | DatabasePipe | NetworkInterface
+
+(* ============================================ *)
+(* Command - Asynchronous Operation            *)
+(* ============================================ *)
+
+(*
+ * Command represents an asynchronous operation to be executed by a
+ * NeuralReactor. Commands follow the Command pattern for extensibility.
+ *)
+schema Command
+  command_id: ID           (* Unique command identifier *)
+  next_commands: seq ID    (* Chain of subsequent commands *)
+  session_id: ID           (* Associated session *)
+  created_at: ℕ            (* Creation timestamp *)
+where
+  (* Valid command identifier *)
+  command_id > 0
+  
+  (* Valid session reference *)
+  session_id > 0
+  
+  (* Next commands are all valid *)
+  (∀ cmd : ran next_commands @ cmd > 0)
+  
+  (* No duplicate next commands *)
+  #next_commands = #(ran next_commands)
+end
+
+(* ============================================ *)
+(* FeedForward - Feedforward Computation       *)
+(* ============================================ *)
+
+(*
+ * FeedForward extends Command to represent a neural network
+ * feedforward computation through a specific layer.
+ *)
+schema FeedForward
+  Command                  (* Inherits from Command *)
+  layer: LayerProxy        (* Layer to compute through *)
+  input: NDArray          (* Input activation *)
+  rank: Rank              (* Processing rank *)
+where
+  (* Input shape matches layer input dimension *)
+  input.shape(#input.shape) = layer.layer_ref
+  
+  (* Input is on appropriate device *)
+  input.device ∈ {GPU, Distributed}
+end
+
+(* ============================================ *)
+(* ValueArray - Activation Storage             *)
+(* ============================================ *)
+
+(*
+ * ValueArray wraps NDArray with session context for storing
+ * intermediate activations during neural network computation.
+ *)
+schema ValueArray
+  array: NDArray           (* The numerical array *)
+  session_id: ID           (* Owning session *)
+  layer_id: ID            (* Layer that produced this *)
+  timestamp: ℕ            (* Creation timestamp *)
+where
+  (* Valid identifiers *)
+  session_id > 0 ∧ layer_id > 0
+  
+  (* Valid timestamp *)
+  timestamp > 0
+end
+
+(* ============================================ *)
+(* HashMap Structures                          *)
+(* ============================================ *)
+
+(*
+ * Session Map - Maps session hashes to session state
+ *)
+SessionMap == hash_t ⇸ SessionState
+
+(*
+ * NDArray Map - Maps array hashes to NDArray instances
+ *)
+NDArrayMap == hash_t ⇸ NDArray
+
+(*
+ * Invariants for hash maps
+ *)
+schema HashMapInvariants
+  session_map: SessionMap
+  ndarray_map: NDArrayMap
+where
+  (* All mapped session IDs are unique *)
+  (∀ h1, h2 : dom session_map | h1 ≠ h2 @ 
+    session_map(h1).session_id ≠ session_map(h2).session_id)
+  
+  (* All sessions have valid state *)
+  (∀ h : dom session_map @ 
+    session_map(h).state ∈ {INIT, PROCESSING, WAITING_GPU, 
+                            WAITING_DB, COMPLETED, FAILED})
+  
+  (* All NDArrays have valid shape *)
+  (∀ h : dom ndarray_map @ 
+    #(ndarray_map(h).shape) > 0)
+end
+
+(* ============================================ *)
+(* Data Invariants and Consistency Rules       *)
+(* ============================================ *)
+
+(*
+ * Global data consistency invariants that must hold across the system
+ *)
+schema DataConsistency
+  sessions: ℙ SessionState
+  arrays: ℙ NDArray
+  layers: ℙ Layer
+where
+  (* All session IDs are unique *)
+  (∀ s1, s2 : sessions | s1 ≠ s2 @ s1.session_id ≠ s2.session_id)
+  
+  (* All layers have valid weights and biases *)
+  (∀ l : layers @ 
+    l.weights.shape = ⟨l.output_size, l.input_size⟩ ∧
+    l.bias.shape = ⟨l.output_size⟩)
+  
+  (* All arrays have consistent data *)
+  (∀ a : arrays @ 
+    #a.data = ∏{i : 1..#a.shape @ a.shape(i)})
+end

@@ -1,0 +1,540 @@
+(*
+ * HyperMind Operations Formal Specification
+ * Z++ Specification of System Operations and State Transitions
+ *
+ * This module defines all operations that modify system state,
+ * including their preconditions, postconditions, and invariant preservation.
+ *)
+
+(* Import previous specifications *)
+include data_model
+include system_state
+
+(* ============================================ *)
+(* Session Management Operations               *)
+(* ============================================ *)
+
+(*
+ * CreateSession - Initiates a new neural network computation session
+ *)
+schema CreateSession
+  ΔSystemState                            (* System state changes *)
+  i?: ID                                   (* Input: initiator ID *)
+  session_id!: ID                          (* Output: new session ID *)
+  layers?: seq ID                          (* Input: layer sequence *)
+pre
+  (* Initiator exists and is running *)
+  (∃ init : initiators @ init.initiator_id = i? ∧ init.is_running)
+  
+  (* Layer sequence is valid *)
+  #layers? > 0 ∧ (∀ l : ran layers? @ l ∈ dom layer_registry)
+  
+  (* At least one reactor is available *)
+  (∃ init : initiators | init.initiator_id = i? @ 
+    #init.available_reactors > 0)
+post
+  (* New session ID is unique *)
+  session_id! ∉ (⋃{init : initiators @ init.active_sessions ∪ 
+                                         init.completed_sessions ∪ 
+                                         init.failed_sessions})
+  
+  (* Session added to initiator's active sessions *)
+  (∃ init : initiators', init_old : initiators | 
+    init.initiator_id = i? ∧ init_old.initiator_id = i? @
+    init.active_sessions = init_old.active_sessions ∪ {session_id!} ∧
+    init.sessions_created = init_old.sessions_created + 1)
+  
+  (* SessionState created in a reactor *)
+  (∃ r : reactors', h : hash_t @ 
+    h ∈ dom r.session_map ∧
+    r.session_map(h).session_id = session_id! ∧
+    r.session_map(h).state = INIT ∧
+    r.session_map(h).layer_index = 0 ∧
+    r.session_map(h).completed_layers = ∅ ∧
+    r.session_map(h).pending_operations = 0)
+  
+  (* Reactor marked as busy *)
+  (∃ init : initiators', r : reactors', init_old : initiators |
+    init.initiator_id = i? ∧ init_old.initiator_id = i? @
+    r.reactor_id ∈ init.busy_reactors ∧
+    r.reactor_id ∉ init_old.busy_reactors)
+  
+  (* System timestamp updated *)
+  system_time' > system_time
+end
+
+(*
+ * GetSessionState - Retrieves current state of a session
+ *)
+schema GetSessionState
+  ΞSystemState                            (* System state unchanged *)
+  session_id?: ID                          (* Input: session ID *)
+  state!: SessionState                     (* Output: session state *)
+pre
+  (* Session exists in some reactor *)
+  (∃ r : reactors @ 
+    (∃ h : dom r.session_map @ 
+      r.session_map(h).session_id = session_id?))
+post
+  (* Returned state matches session *)
+  (∃ r : reactors, h : dom r.session_map @ 
+    r.session_map(h).session_id = session_id? ∧
+    state! = r.session_map(h))
+end
+
+(*
+ * CompleteSession - Marks a session as completed
+ *)
+schema CompleteSession
+  ΔSystemState
+  session_id?: ID                          (* Input: session ID *)
+  success?: 𝔹                              (* Input: success status *)
+pre
+  (* Session exists and is active *)
+  (∃ init : initiators @ session_id? ∈ init.active_sessions)
+  
+  (* Session state indicates completion *)
+  (∃ r : reactors, h : dom r.session_map @ 
+    r.session_map(h).session_id = session_id? ∧
+    r.session_map(h).pending_operations = 0)
+post
+  (* Session moved to appropriate set *)
+  (∃ init : initiators', init_old : initiators @ 
+    session_id? ∈ init_old.active_sessions ∧
+    session_id? ∉ init'.active_sessions ∧
+    (success? ⇒ session_id? ∈ init'.completed_sessions) ∧
+    (¬success? ⇒ session_id? ∈ init'.failed_sessions))
+  
+  (* Session removed from reactor *)
+  (∀ r : reactors' @ 
+    (∀ h : dom r.session_map @ 
+      r.session_map(h).session_id ≠ session_id?))
+  
+  (* Reactor marked as available *)
+  (∃ init : initiators', r_old : reactors, init_old : initiators |
+    (∃ h : dom r_old.session_map @ 
+      r_old.session_map(h).session_id = session_id?) @
+    r_old.reactor_id ∈ init_old.busy_reactors ∧
+    r_old.reactor_id ∉ init'.busy_reactors)
+end
+
+(* ============================================ *)
+(* Command Processing Operations               *)
+(* ============================================ *)
+
+(*
+ * EnqueueCommand - Adds a command to a reactor's command queue
+ *)
+schema EnqueueCommand
+  ΔNeuralReactor                          (* Reactor state changes *)
+  cmd?: Command                            (* Input: command to enqueue *)
+  priority?: ℕ                             (* Input: command priority *)
+pre
+  (* Reactor is running *)
+  is_running
+  
+  (* Command queue not full *)
+  ¬(command_queue.is_full)
+  
+  (* Command references valid session *)
+  (∃ h : dom session_map @ 
+    session_map(h).session_id = cmd?.session_id)
+  
+  (* Priority is valid *)
+  priority? ≥ 0 ∧ priority? ≤ 10
+post
+  (* Command added to queue maintaining priority order *)
+  cmd? ∈ ran command_queue'.items ∧
+  #command_queue'.items = #command_queue.items + 1 ∧
+  
+  (* Queue remains sorted by priority *)
+  (∀ i, j : 1..#command_queue'.priorities | i < j @ 
+    command_queue'.priorities(i) ≤ command_queue'.priorities(j))
+end
+
+(*
+ * ExecuteCommand - Processes a command from the queue
+ *)
+schema ExecuteCommand
+  ΔSystemState
+  reactor_id?: ID                          (* Input: executing reactor *)
+pre
+  (* Reactor exists and is running *)
+  (∃ r : reactors @ r.reactor_id = reactor_id? ∧ r.is_running)
+  
+  (* Command queue has items *)
+  (∃ r : reactors | r.reactor_id = reactor_id? @ 
+    #r.command_queue.items > 0)
+post
+  (* Command removed from queue *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    #r'.command_queue.items = #r_old.command_queue.items - 1)
+  
+  (* Processed message count incremented *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    r'.processed_messages = r_old.processed_messages + 1)
+  
+  (* System timestamp updated *)
+  system_time' > system_time
+end
+
+(*
+ * ExecuteFeedForward - Executes a feedforward computation command
+ *)
+schema ExecuteFeedForward
+  ΔSystemState
+  cmd?: FeedForward                        (* Input: feedforward command *)
+  reactor_id?: ID                          (* Input: executing reactor *)
+  result!: NDArray                         (* Output: computation result *)
+pre
+  (* Reactor exists *)
+  (∃ r : reactors @ r.reactor_id = reactor_id?)
+  
+  (* Session exists in reactor *)
+  (∃ r : reactors, h : dom r.session_map | r.reactor_id = reactor_id? @ 
+    r.session_map(h).session_id = cmd?.session_id)
+  
+  (* Input array is valid *)
+  #cmd?.input.data > 0 ∧ #cmd?.input.shape > 0
+  
+  (* Layer exists in registry *)
+  cmd?.layer.layer_ref ∈ dom layer_registry
+post
+  (* Result array has correct shape *)
+  (∃ layer : ran layer_registry | layer.layer_id = cmd?.layer.layer_ref @
+    result!.shape = ⟨layer.output_size⟩)
+  
+  (* Session state updated *)
+  (∃ r : reactors', r_old : reactors, h : dom r'.session_map | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? ∧
+    r'.session_map(h).session_id = cmd?.session_id @
+    r'.session_map(h).layer_index = r_old.session_map(h).layer_index + 1 ∧
+    r'.session_map(h).completed_layers = 
+      r_old.session_map(h).completed_layers ∪ {r_old.session_map(h).layer_index})
+  
+  (* Result stored in ndarray_map *)
+  (∃ r : reactors', h : hash_t | r.reactor_id = reactor_id? @
+    h ∈ dom r'.ndarray_map ∧ r'.ndarray_map(h) = result!)
+  
+  (* Next commands enqueued if present *)
+  #cmd?.next_commands > 0 ⇒
+    (∃ r : reactors', r_old : reactors | 
+      r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+      #r'.command_queue.items ≥ #r_old.command_queue.items)
+end
+
+(* ============================================ *)
+(* Message Handling Operations                 *)
+(* ============================================ *)
+
+(*
+ * SendMessage - Sends a message from one reactor to another
+ *)
+schema SendMessage
+  ΔSystemState
+  sender?: ID                              (* Input: sender reactor ID *)
+  receiver?: ID                            (* Input: receiver reactor ID *)
+  msg?: Message                            (* Input: message to send *)
+pre
+  (* Sender and receiver exist *)
+  (∃ r1 : reactors @ r1.reactor_id = sender?) ∧
+  (∃ r2 : reactors @ r2.reactor_id = receiver?)
+  
+  (* Message fields are consistent *)
+  msg?.sender_id = sender? ∧ msg?.receiver_id = receiver?
+  
+  (* Receiver queue not full *)
+  (∃ r : reactors | r.reactor_id = receiver? @ 
+    ¬r.external_queue.is_full)
+  
+  (* Sender is running *)
+  (∃ r : reactors | r.reactor_id = sender? @ r.is_running)
+post
+  (* Message added to receiver's external queue *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = receiver? ∧ r_old.reactor_id = receiver? @
+    msg? ∈ ran r'.external_queue.items ∧
+    #r'.external_queue.items = #r_old.external_queue.items + 1)
+  
+  (* Queue maintains priority order *)
+  (∃ r : reactors' | r.reactor_id = receiver? @
+    (∀ i, j : 1..#r.external_queue.priorities | i < j @ 
+      r.external_queue.priorities(i) ≤ r.external_queue.priorities(j)))
+end
+
+(*
+ * ReceiveMessage - Retrieves and processes message from queue
+ *)
+schema ReceiveMessage
+  ΔNeuralReactor
+  msg!: Message                            (* Output: received message *)
+pre
+  (* Reactor is running *)
+  is_running
+  
+  (* External queue has messages *)
+  #external_queue.items > 0
+post
+  (* Highest priority message removed *)
+  msg! = external_queue.items(1) ∧
+  external_queue'.items = tail external_queue.items ∧
+  external_queue'.priorities = tail external_queue.priorities
+  
+  (* Processed count incremented *)
+  processed_messages' = processed_messages + 1
+end
+
+(*
+ * HandleActivateMessage - Processes activation message
+ *)
+schema HandleActivateMessage
+  ΔNeuralReactor
+  session_id?: ID                          (* Input: session ID *)
+  sum_array?: ValueArray                   (* Input: activation sum *)
+pre
+  (* Session exists *)
+  (∃ h : dom session_map @ session_map(h).session_id = session_id?)
+  
+  (* Sum array is valid *)
+  #sum_array?.array.data > 0
+post
+  (* Session state updated *)
+  (∃ h : dom session_map', h_old : dom session_map | 
+    session_map'(h).session_id = session_id? ∧
+    session_map(h_old).session_id = session_id? @
+    session_map'(h).state = PROCESSING ∧
+    session_map'(h).pending_operations = 
+      session_map(h_old).pending_operations + 1)
+  
+  (* Array stored in map *)
+  (∃ h : hash_t @ 
+    h ∈ dom ndarray_map' ∧ 
+    ndarray_map'(h) = sum_array?.array)
+end
+
+(* ============================================ *)
+(* GPU Event Handling Operations               *)
+(* ============================================ *)
+
+(*
+ * SubmitGPUOperation - Submits computation to GPU
+ *)
+schema SubmitGPUOperation
+  ΔSystemState
+  reactor_id?: ID                          (* Input: requesting reactor *)
+  op_id!: ID                               (* Output: operation ID *)
+  input?: NDArray                          (* Input: data to process *)
+pre
+  (* Reactor exists and is running *)
+  (∃ r : reactors @ r.reactor_id = reactor_id? ∧ r.is_running)
+  
+  (* GPU stream available *)
+  (∃ g : gpu_streams @ 
+    g.is_active ∧ 
+    g.memory_allocated + #input?.data * 4 ≤ g.memory_capacity)
+  
+  (* Input is on GPU or can be transferred *)
+  input?.device ∈ {GPU, CPU}
+post
+  (* Operation added to GPU stream *)
+  (∃ g : gpu_streams', g_old : gpu_streams @ 
+    op_id! ∈ g'.pending_ops ∧
+    op_id! ∉ g_old.pending_ops ∧
+    op_id! ∈ ran g'.operation_queue)
+  
+  (* Memory allocated for operation *)
+  (∃ g : gpu_streams', g_old : gpu_streams @ 
+    g'.memory_allocated = g_old.memory_allocated + #input?.data * 4)
+  
+  (* Reactor session marked as waiting *)
+  (∃ r : reactors', h : dom r'.session_map | r.reactor_id = reactor_id? @
+    r'.session_map(h).state = WAITING_GPU)
+end
+
+(*
+ * HandleGPUEvent - Processes GPU completion event
+ *)
+schema HandleGPUEvent
+  ΔSystemState
+  event?: Event                            (* Input: GPU event *)
+  reactor_id?: ID                          (* Input: reactor handling event *)
+pre
+  (* Event is GPU event *)
+  event?.source = GPUStream
+  
+  (* Reactor exists *)
+  (∃ r : reactors @ r.reactor_id = reactor_id?)
+  
+  (* Event in reactor's GPU queue *)
+  (∃ r : reactors | r.reactor_id = reactor_id? @ 
+    event? ∈ ran r.gpu_queue)
+post
+  (* Event removed from queue *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    event? ∉ ran r'.gpu_queue ∧ event? ∈ ran r_old.gpu_queue)
+  
+  (* Operation marked complete in GPU stream *)
+  (∃ g : gpu_streams', g_old : gpu_streams, op_id : ID @ 
+    op_id ∈ g_old.pending_ops ∧
+    op_id ∉ g'.pending_ops ∧
+    op_id ∈ g'.completed_ops)
+  
+  (* Memory freed *)
+  (∃ g : gpu_streams', g_old : gpu_streams @ 
+    g'.memory_allocated < g_old.memory_allocated)
+  
+  (* Session state updated *)
+  (∃ r : reactors', h : dom r'.session_map | r.reactor_id = reactor_id? @
+    r'.session_map(h).state = PROCESSING ∧
+    r'.session_map(h).pending_operations = 
+      r.session_map(h).pending_operations - 1)
+end
+
+(* ============================================ *)
+(* Database Operations                         *)
+(* ============================================ *)
+
+(*
+ * SubmitDatabaseQuery - Submits persistence query
+ *)
+schema SubmitDatabaseQuery
+  ΔSystemState
+  reactor_id?: ID                          (* Input: requesting reactor *)
+  query_id!: ID                            (* Output: query ID *)
+  data?: NDArray                           (* Input: data to persist *)
+pre
+  (* Reactor exists *)
+  (∃ r : reactors @ r.reactor_id = reactor_id?)
+  
+  (* Database pipe available and connected *)
+  (∃ d : db_pipes @ 
+    d.is_connected ∧ #d.query_queue < 1000)
+  
+  (* Data is valid *)
+  #data?.data > 0
+post
+  (* Query added to database pipe *)
+  (∃ d : db_pipes', d_old : db_pipes @ 
+    query_id! ∈ d'.pending_queries ∧
+    query_id! ∉ d_old.pending_queries ∧
+    query_id! ∈ ran d'.query_queue)
+  
+  (* Session marked as waiting *)
+  (∃ r : reactors', h : dom r'.session_map | r.reactor_id = reactor_id? @
+    r'.session_map(h).state = WAITING_DB ∧
+    r'.session_map(h).pending_operations = 
+      r.session_map(h).pending_operations + 1)
+end
+
+(*
+ * HandleDatabaseEvent - Processes database result
+ *)
+schema HandleDatabaseEvent
+  ΔSystemState
+  event?: Event                            (* Input: database event *)
+  reactor_id?: ID                          (* Input: reactor handling event *)
+pre
+  (* Event is database event *)
+  event?.source = DatabasePipe
+  
+  (* Reactor exists *)
+  (∃ r : reactors @ r.reactor_id = reactor_id?)
+  
+  (* Event in reactor's DB queue *)
+  (∃ r : reactors | r.reactor_id = reactor_id? @ 
+    event? ∈ ran r.db_queue)
+post
+  (* Event removed from queue *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    event? ∉ ran r'.db_queue ∧ event? ∈ ran r_old.db_queue)
+  
+  (* Query marked complete *)
+  (∃ d : db_pipes', d_old : db_pipes, query_id : ID @ 
+    query_id ∈ d_old.pending_queries ∧
+    query_id ∉ d'.pending_queries ∧
+    query_id ∈ d'.completed_queries)
+  
+  (* Session state updated *)
+  (∃ r : reactors', h : dom r'.session_map | r.reactor_id = reactor_id? @
+    r'.session_map(h).state = PROCESSING ∧
+    r'.session_map(h).pending_operations = 
+      r.session_map(h).pending_operations - 1)
+end
+
+(* ============================================ *)
+(* Reactor Lifecycle Operations                *)
+(* ============================================ *)
+
+(*
+ * StartReactor - Initializes and starts a reactor
+ *)
+schema StartReactor
+  ΔSystemState
+  reactor_id?: ID                          (* Input: reactor to start *)
+  rank?: Rank                              (* Input: reactor rank *)
+pre
+  (* Reactor exists but is not running *)
+  (∃ r : reactors @ r.reactor_id = reactor_id? ∧ ¬r.is_running)
+  
+  (* System has capacity for another running reactor *)
+  #reactors < max_reactors
+post
+  (* Reactor marked as running *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    r'.is_running ∧ ¬r_old.is_running ∧
+    r'.rank = rank?)
+end
+
+(*
+ * StopReactor - Gracefully stops a reactor
+ *)
+schema StopReactor
+  ΔSystemState
+  reactor_id?: ID                          (* Input: reactor to stop *)
+pre
+  (* Reactor exists and is running *)
+  (∃ r : reactors @ r.reactor_id = reactor_id? ∧ r.is_running)
+  
+  (* No active sessions *)
+  (∃ r : reactors | r.reactor_id = reactor_id? @ 
+    #r.session_map = 0)
+  
+  (* All queues empty *)
+  (∃ r : reactors | r.reactor_id = reactor_id? @ 
+    #r.internal_queue.items = 0 ∧
+    #r.external_queue.items = 0 ∧
+    #r.command_queue.items = 0)
+post
+  (* Reactor marked as stopped *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = reactor_id? ∧ r_old.reactor_id = reactor_id? @
+    ¬r'.is_running ∧ r_old.is_running)
+  
+  (* Reactor removed from busy set *)
+  (∀ init : initiators' @ reactor_id? ∉ init'.busy_reactors)
+end
+
+(*
+ * ReactorRunLoop - Main execution loop iteration
+ *)
+schema ReactorRunLoop
+  ΔNeuralReactor
+pre
+  (* Reactor is running *)
+  is_running
+post
+  (* Process highest priority item from available queues *)
+  ((#external_queue.items > 0) ∨
+   (#command_queue.items > 0) ∨
+   (#gpu_queue > 0) ∨
+   (#db_queue > 0)) ⇒
+   processed_messages' > processed_messages
+  
+  (* Queues maintain invariants *)
+  #session_map' ≤ max_sessions
+end

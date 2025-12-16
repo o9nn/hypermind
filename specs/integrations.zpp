@@ -1,0 +1,613 @@
+(*
+ * HyperMind Integration Contracts Formal Specification
+ * Z++ Specification of External System Integrations
+ *
+ * This module defines the contracts and protocols for integrating
+ * with external systems: GPU hardware, PostgreSQL database, and network.
+ *)
+
+(* Import previous specifications *)
+include data_model
+include system_state
+include operations
+
+(* ============================================ *)
+(* GPU Integration Contract                    *)
+(* ============================================ *)
+
+(*
+ * GPU Operation Types
+ *)
+GPUOperationType ::= 
+  | MatrixMultiply    (* Matrix multiplication *)
+  | Activation        (* Activation function *)
+  | Gradient          (* Gradient computation *)
+  | MemoryCopy        (* Memory transfer *)
+
+(*
+ * GPUOperation - Represents a GPU computation request
+ *)
+schema GPUOperation
+  operation_id: ID                         (* Unique operation ID *)
+  op_type: GPUOperationType                (* Type of operation *)
+  input_arrays: seq NDArray                (* Input data *)
+  output_shape: seq ℕ                      (* Expected output shape *)
+  stream_id: ID                            (* Target GPU stream *)
+  priority: ℕ                              (* Operation priority *)
+  timeout: ℕ                               (* Timeout in milliseconds *)
+where
+  (* Valid operation ID *)
+  operation_id > 0
+  
+  (* At least one input *)
+  #input_arrays > 0
+  
+  (* All inputs on GPU or CPU *)
+  (∀ arr : ran input_arrays @ arr.device ∈ {GPU, CPU})
+  
+  (* Output shape is valid *)
+  #output_shape > 0 ∧ (∀ dim : ran output_shape @ dim > 0)
+  
+  (* Priority in valid range *)
+  priority ≥ 0 ∧ priority ≤ 10
+  
+  (* Timeout is positive *)
+  timeout > 0
+end
+
+(*
+ * GPUResult - Result of GPU operation
+ *)
+schema GPUResult
+  operation_id: ID                         (* Corresponding operation *)
+  success: 𝔹                               (* Success status *)
+  output: NDArray                          (* Result array *)
+  execution_time: ℕ                        (* Execution time in microseconds *)
+  error_message: String                    (* Error if failed *)
+where
+  (* Valid operation reference *)
+  operation_id > 0
+  
+  (* On success, output must be valid *)
+  success ⇒ (#output.data > 0 ∧ output.device = GPU)
+  
+  (* On failure, error message provided *)
+  ¬success ⇒ error_message ≠ ""
+  
+  (* Execution time is non-negative *)
+  execution_time ≥ 0
+end
+
+(*
+ * SubmitGPUComputation - Contract for submitting GPU work
+ *)
+schema SubmitGPUComputation
+  ΔGPUStream
+  op?: GPUOperation                        (* Input: operation to execute *)
+  op_id!: ID                               (* Output: assigned operation ID *)
+pre
+  (* Stream is active *)
+  is_active
+  
+  (* Sufficient memory available *)
+  (∑{arr : ran op?.input_arrays @ #arr.data * 4}) + memory_allocated 
+    ≤ memory_capacity
+  
+  (* Stream matches operation *)
+  op?.stream_id = stream_id
+post
+  (* Operation added to pending *)
+  op_id! ∈ pending_ops' ∧ op_id! ∉ pending_ops
+  
+  (* Operation queued *)
+  op_id! ∈ ran operation_queue'
+  
+  (* Memory allocated *)
+  memory_allocated' = memory_allocated + 
+    (∑{arr : ran op?.input_arrays @ #arr.data * 4})
+  
+  (* Queue maintains order *)
+  operation_queue' = operation_queue ⌢ ⟨op_id!⟩
+end
+
+(*
+ * CompleteGPUComputation - Contract for GPU result handling
+ *)
+schema CompleteGPUComputation
+  ΔGPUStream
+  result?: GPUResult                       (* Input: computation result *)
+pre
+  (* Operation was pending *)
+  result?.operation_id ∈ pending_ops
+  
+  (* Stream is active *)
+  is_active
+post
+  (* Operation moved to completed *)
+  result?.operation_id ∉ pending_ops' ∧
+  result?.operation_id ∈ completed_ops'
+  
+  (* Operation removed from queue *)
+  result?.operation_id ∉ ran operation_queue'
+  
+  (* Memory freed *)
+  memory_allocated' < memory_allocated
+end
+
+(*
+ * GPU Stream Lifecycle Invariants
+ *)
+schema GPUStreamInvariants
+  GPUStream
+where
+  (* Pending operations are in queue *)
+  ran operation_queue ⊆ pending_ops
+  
+  (* No operation in both pending and completed *)
+  pending_ops ∩ completed_ops = ∅
+  
+  (* Memory usage is realistic *)
+  memory_allocated ≤ memory_capacity ∧ memory_allocated ≥ 0
+  
+  (* Active stream has capacity *)
+  is_active ⇒ memory_capacity > 0
+end
+
+(* ============================================ *)
+(* PostgreSQL Database Integration Contract    *)
+(* ============================================ *)
+
+(*
+ * Database Query Types
+ *)
+DatabaseQueryType ::=
+  | INSERT          (* Insert new record *)
+  | UPDATE          (* Update existing record *)
+  | SELECT          (* Retrieve records *)
+  | DELETE          (* Delete records *)
+  | BATCH_INSERT    (* Batch insert operation *)
+
+(*
+ * DatabaseQuery - Represents a database operation
+ *)
+schema DatabaseQuery
+  query_id: ID                             (* Unique query ID *)
+  query_type: DatabaseQueryType            (* Type of query *)
+  table_name: String                       (* Target table *)
+  data: seq Byte                           (* Serialized query data *)
+  session_id: ID                           (* Associated session *)
+  timeout: ℕ                               (* Query timeout *)
+where
+  (* Valid query ID *)
+  query_id > 0
+  
+  (* Valid session *)
+  session_id > 0
+  
+  (* Table name is non-empty *)
+  table_name ≠ ""
+  
+  (* Data is present for mutation queries *)
+  query_type ∈ {INSERT, UPDATE, BATCH_INSERT} ⇒ #data > 0
+  
+  (* Timeout is positive *)
+  timeout > 0
+end
+
+(*
+ * DatabaseResult - Result of database operation
+ *)
+schema DatabaseResult
+  query_id: ID                             (* Corresponding query *)
+  success: 𝔹                               (* Success status *)
+  rows_affected: ℕ                         (* Rows inserted/updated/deleted *)
+  result_data: seq Byte                    (* Retrieved data if SELECT *)
+  execution_time: ℕ                        (* Execution time in microseconds *)
+  error_message: String                    (* Error if failed *)
+where
+  (* Valid query reference *)
+  query_id > 0
+  
+  (* On success, rows affected is non-negative *)
+  success ⇒ rows_affected ≥ 0
+  
+  (* On failure, error message provided *)
+  ¬success ⇒ error_message ≠ ""
+  
+  (* SELECT queries return data on success *)
+  success ∧ rows_affected > 0 ⇒ #result_data > 0
+  
+  (* Execution time is non-negative *)
+  execution_time ≥ 0
+end
+
+(*
+ * SubmitDatabaseOperation - Contract for database requests
+ *)
+schema SubmitDatabaseOperation
+  ΔDatabasePipe
+  query?: DatabaseQuery                    (* Input: query to execute *)
+  query_id!: ID                            (* Output: assigned query ID *)
+pre
+  (* Pipe is connected *)
+  is_connected
+  
+  (* Connection string is valid *)
+  connection_string ≠ ""
+  
+  (* Query queue not full *)
+  #query_queue < 1000
+  
+  (* Buffer has capacity *)
+  #result_buffer < buffer_capacity
+post
+  (* Query added to pending *)
+  query_id! ∈ pending_queries' ∧ query_id! ∉ pending_queries
+  
+  (* Query queued *)
+  query_id! ∈ ran query_queue'
+  
+  (* Queue maintains order *)
+  query_queue' = query_queue ⌢ ⟨query_id!⟩
+end
+
+(*
+ * CompleteDatabaseOperation - Contract for database result handling
+ *)
+schema CompleteDatabaseOperation
+  ΔDatabasePipe
+  result?: DatabaseResult                  (* Input: query result *)
+pre
+  (* Query was pending *)
+  result?.query_id ∈ pending_queries
+  
+  (* Pipe is connected *)
+  is_connected
+post
+  (* Query moved to completed *)
+  result?.query_id ∉ pending_queries' ∧
+  result?.query_id ∈ completed_queries'
+  
+  (* Query removed from queue *)
+  result?.query_id ∉ ran query_queue'
+  
+  (* Result event added to buffer if space *)
+  #result_buffer' ≤ buffer_capacity
+end
+
+(*
+ * Database Connection Management
+ *)
+schema EstablishDatabaseConnection
+  ΔDatabasePipe
+  conn_string?: String                     (* Input: connection string *)
+pre
+  (* Not currently connected *)
+  ¬is_connected
+  
+  (* Valid connection string *)
+  conn_string? ≠ ""
+post
+  (* Connection established *)
+  is_connected' ∧
+  connection_string' = conn_string?
+  
+  (* Queues initialized *)
+  pending_queries' = ∅ ∧
+  completed_queries' = ∅ ∧
+  query_queue' = ⟨⟩ ∧
+  result_buffer' = ⟨⟩
+end
+
+schema CloseDatabaseConnection
+  ΔDatabasePipe
+pre
+  (* Currently connected *)
+  is_connected
+  
+  (* No pending queries *)
+  pending_queries = ∅
+  
+  (* Queue is empty *)
+  #query_queue = 0
+post
+  (* Connection closed *)
+  ¬is_connected' ∧
+  connection_string' = ""
+  
+  (* All state cleared *)
+  pending_queries' = ∅ ∧
+  completed_queries' = ∅
+end
+
+(*
+ * Database Pipe Invariants
+ *)
+schema DatabasePipeInvariants
+  DatabasePipe
+where
+  (* Pending queries are in queue *)
+  ran query_queue ⊆ pending_queries
+  
+  (* No query in both pending and completed *)
+  pending_queries ∩ completed_queries = ∅
+  
+  (* Buffer respects capacity *)
+  #result_buffer ≤ buffer_capacity
+  
+  (* Connected pipe has valid connection string *)
+  is_connected ⇒ connection_string ≠ ""
+end
+
+(* ============================================ *)
+(* Network Communication Contract              *)
+(* ============================================ *)
+
+(*
+ * Network Message Envelope
+ *)
+schema NetworkEnvelope
+  source_address: String                   (* Source network address *)
+  dest_address: String                     (* Destination address *)
+  message: Message                         (* Encapsulated message *)
+  sequence_number: ℕ                       (* Message sequence number *)
+  checksum: ℕ                              (* Message checksum *)
+  timestamp: ℕ                             (* Send timestamp *)
+where
+  (* Valid addresses *)
+  source_address ≠ "" ∧ dest_address ≠ ""
+  
+  (* Sequence number is non-negative *)
+  sequence_number ≥ 0
+  
+  (* Timestamp is valid *)
+  timestamp > 0
+end
+
+(*
+ * SendNetworkMessage - Contract for network send
+ *)
+schema SendNetworkMessage
+  ΔSystemState
+  envelope?: NetworkEnvelope               (* Input: message envelope *)
+pre
+  (* Source reactor exists *)
+  (∃ r : reactors @ r.reactor_id = envelope?.message.sender_id)
+  
+  (* Destination reactor exists (may be on another machine) *)
+  envelope?.message.receiver_id > 0
+  
+  (* Network topology allows communication *)
+  (∃ sender_id : dom network_topology @ 
+    sender_id = envelope?.message.sender_id ∧
+    envelope?.message.receiver_id ∈ network_topology(sender_id))
+post
+  (* Message eventually delivered to receiver's external queue *)
+  (∃ r : reactors' | r.reactor_id = envelope?.message.receiver_id @
+    envelope?.message ∈ ran r.external_queue.items) ∨
+  (* Or queued for delivery if receiver not local *)
+  (envelope?.message.receiver_id ∉ {r : reactors @ r.reactor_id})
+  
+  (* Checksum validated *)
+  envelope?.checksum > 0
+end
+
+(*
+ * ReceiveNetworkMessage - Contract for network receive
+ *)
+schema ReceiveNetworkMessage
+  ΔSystemState
+  envelope?: NetworkEnvelope               (* Input: received envelope *)
+pre
+  (* Destination reactor exists locally *)
+  (∃ r : reactors @ r.reactor_id = envelope?.message.receiver_id)
+  
+  (* Checksum is valid *)
+  envelope?.checksum > 0
+post
+  (* Message added to receiver's queue *)
+  (∃ r : reactors', r_old : reactors | 
+    r.reactor_id = envelope?.message.receiver_id ∧
+    r_old.reactor_id = envelope?.message.receiver_id @
+    envelope?.message ∈ ran r'.external_queue.items ∧
+    envelope?.message ∉ ran r_old.external_queue.items)
+end
+
+(* ============================================ *)
+(* Integration Error Handling                  *)
+(* ============================================ *)
+
+(*
+ * Error Severity Levels
+ *)
+ErrorSeverity ::= 
+  | WARNING       (* Recoverable issue *)
+  | ERROR         (* Operation failed *)
+  | CRITICAL      (* System integrity at risk *)
+
+(*
+ * IntegrationError - Error in external integration
+ *)
+schema IntegrationError
+  error_id: ID                             (* Unique error ID *)
+  source: EventSource                      (* Error source *)
+  severity: ErrorSeverity                  (* Error severity *)
+  message: String                          (* Error description *)
+  timestamp: ℕ                             (* Error occurrence time *)
+  related_operation: ID                    (* Related operation ID *)
+where
+  (* Valid error ID *)
+  error_id > 0
+  
+  (* Message is non-empty *)
+  message ≠ ""
+  
+  (* Timestamp is valid *)
+  timestamp > 0
+  
+  (* Related operation is valid *)
+  related_operation > 0
+end
+
+(*
+ * HandleIntegrationError - Error handling contract
+ *)
+schema HandleIntegrationError
+  ΔSystemState
+  error?: IntegrationError                 (* Input: error to handle *)
+pre
+  (* Error source is valid *)
+  error?.source ∈ {GPUStream, DatabasePipe, NetworkInterface}
+post
+  (* Critical errors stop affected component *)
+  error?.severity = CRITICAL ⇒
+    ((error?.source = GPUStream ⇒
+      (∃ g : gpu_streams', g_old : gpu_streams @ 
+        ¬g'.is_active ∧ g_old.is_active)) ∨
+     (error?.source = DatabasePipe ⇒
+      (∃ d : db_pipes', d_old : db_pipes @ 
+        ¬d'.is_connected ∧ d_old.is_connected)))
+  
+  (* Related session marked as failed *)
+  (∃ r : reactors', h : dom r'.session_map @
+    r'.session_map(h).state = FAILED)
+end
+
+(* ============================================ *)
+(* Integration Health Monitoring               *)
+(* ============================================ *)
+
+(*
+ * HealthStatus - Component health state
+ *)
+HealthStatus ::= HEALTHY | DEGRADED | UNHEALTHY | UNKNOWN
+
+(*
+ * ComponentHealth - Health metrics for external component
+ *)
+schema ComponentHealth
+  component: EventSource                   (* Component being monitored *)
+  status: HealthStatus                     (* Current health status *)
+  latency_ms: ℕ                            (* Average latency *)
+  error_rate: ℝ                            (* Error rate (0.0 to 1.0) *)
+  last_check: ℕ                            (* Last health check timestamp *)
+where
+  (* Error rate is valid percentage *)
+  error_rate ≥ 0.0 ∧ error_rate ≤ 1.0
+  
+  (* Latency is non-negative *)
+  latency_ms ≥ 0
+  
+  (* Last check is valid *)
+  last_check > 0
+  
+  (* Status reflects metrics *)
+  (error_rate < 0.01 ∧ latency_ms < 100 ⇒ status = HEALTHY) ∧
+  (error_rate > 0.1 ∨ latency_ms > 1000 ⇒ status ∈ {DEGRADED, UNHEALTHY})
+end
+
+(*
+ * MonitorIntegrationHealth - Health check operation
+ *)
+schema MonitorIntegrationHealth
+  ΞSystemState
+  health!: seq ComponentHealth             (* Output: health status *)
+where
+  (* Health reported for all external components *)
+  #health! ≥ 3 ∧
+  
+  (* GPU streams monitored *)
+  (∃ h : ran health! @ h.component = GPUStream) ∧
+  
+  (* Database pipes monitored *)
+  (∃ h : ran health! @ h.component = DatabasePipe) ∧
+  
+  (* Network monitored *)
+  (∃ h : ran health! @ h.component = NetworkInterface)
+end
+
+(* ============================================ *)
+(* Rate Limiting and Backpressure              *)
+(* ============================================ *)
+
+(*
+ * RateLimiter - Rate limiting configuration
+ *)
+schema RateLimiter
+  max_requests_per_second: ℕ               (* Request rate limit *)
+  current_window_requests: ℕ               (* Requests in current window *)
+  window_start: ℕ                          (* Current window start time *)
+  window_duration_ms: ℕ                    (* Window duration *)
+where
+  (* Valid rate limit *)
+  max_requests_per_second > 0
+  
+  (* Current count within limit *)
+  current_window_requests ≤ max_requests_per_second
+  
+  (* Window duration is positive *)
+  window_duration_ms > 0
+end
+
+(*
+ * ApplyRateLimit - Rate limiting check
+ *)
+schema ApplyRateLimit
+  ΔRateLimiter
+  current_time?: ℕ                         (* Input: current timestamp *)
+  allowed!: 𝔹                              (* Output: request allowed *)
+pre
+  (* Valid timestamp *)
+  current_time? > 0
+post
+  (* Window reset if expired *)
+  (current_time? > window_start + window_duration_ms ⇒
+    window_start' = current_time? ∧
+    current_window_requests' = 0)
+  
+  (* Request allowed if under limit *)
+  allowed! ⇔ current_window_requests < max_requests_per_second
+  
+  (* Counter incremented if allowed *)
+  allowed! ⇒ current_window_requests' = current_window_requests + 1
+end
+
+(*
+ * BackpressureSignal - Backpressure indication
+ *)
+schema BackpressureSignal
+  component: EventSource                   (* Component signaling *)
+  severity: ℕ                              (* Pressure level 0-10 *)
+  recommended_delay_ms: ℕ                  (* Suggested delay *)
+  timestamp: ℕ                             (* Signal timestamp *)
+where
+  (* Severity in range *)
+  severity ≥ 0 ∧ severity ≤ 10
+  
+  (* Delay is reasonable *)
+  recommended_delay_ms ≥ 0 ∧ recommended_delay_ms ≤ 10000
+  
+  (* Timestamp is valid *)
+  timestamp > 0
+end
+
+(*
+ * HandleBackpressure - Backpressure response
+ *)
+schema HandleBackpressure
+  ΔSystemState
+  signal?: BackpressureSignal              (* Input: backpressure signal *)
+pre
+  (* Signal from valid source *)
+  signal?.component ∈ {GPUStream, DatabasePipe, NetworkInterface}
+post
+  (* High severity reduces operation submission *)
+  signal?.severity > 7 ⇒
+    (∀ r : reactors' @ 
+      #r'.command_queue.items ≤ #r.command_queue.items)
+  
+  (* Medium severity pauses new sessions *)
+  signal?.severity > 4 ∧ signal?.severity ≤ 7 ⇒
+    (∀ i : initiators' @ 
+      #i'.active_sessions ≤ #i.active_sessions)
+end

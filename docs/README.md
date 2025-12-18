@@ -242,6 +242,61 @@ GitHub Copilot custom agent configuration providing expert assistance.
 
 ---
 
+### Implementation and Testing Guides
+
+#### [implementation_guide.md](implementation_guide.md) (550+ lines)
+
+Practical guide for implementing HyperMind components from formal specifications.
+
+**Contents:**
+- Step-by-step implementation approach
+- Data structure implementations with invariant checking
+- NeuralReactor and actor implementation
+- Operation implementation following specifications
+- Integration implementation (GPU, Database)
+- Complete code examples in C++
+- Testing strategies
+
+**Key Sections:**
+- NDArray implementation with invariant preservation
+- SessionState with lifecycle management
+- Priority queue implementation
+- NeuralReactor with multi-queue event processing
+- CreateSession and ExecuteFeedForward operations
+- GPU integration contracts
+
+**Use this when:**
+- Implementing new components
+- Converting specifications to code
+- Understanding how to preserve invariants
+- Learning the implementation patterns
+
+#### [test_generation_guide.md](test_generation_guide.md) (550+ lines)
+
+Comprehensive guide for generating tests from formal specifications.
+
+**Contents:**
+- Three-level testing approach (invariants, operations, integrations)
+- Complete test cases derived from specifications
+- Property-based testing examples
+- Test coverage analysis
+- Google Test framework examples
+
+**Key Test Types:**
+- Invariant tests for all schemas
+- Precondition/postcondition tests for operations
+- Integration contract tests
+- Property-based tests
+- Coverage goals and analysis
+
+**Use this when:**
+- Writing tests for HyperMind components
+- Validating implementations against specs
+- Ensuring comprehensive test coverage
+- Understanding test generation methodology
+
+---
+
 ## Document Relationships
 
 ```
@@ -268,10 +323,15 @@ architecture_overview.md (High-level architecture)
    - README.md → architecture_overview.md → Core Concepts section
 
 2. **Implementation:**
-   - architecture_overview.md → specs/data_model.zpp → specs/operations.zpp
+   - architecture_overview.md → specs/data_model.zpp → implementation_guide.md
+   - Follow with specs/operations.zpp for operation implementation
 
-3. **Integration Work:**
-   - architecture_overview.md (Integration Boundaries) → specs/integrations.zpp
+3. **Testing:**
+   - specs/data_model.zpp → test_generation_guide.md
+   - Use specs/operations.zpp for operation test cases
+
+4. **Integration Work:**
+   - architecture_overview.md (Integration Boundaries) → specs/integrations.zpp → implementation_guide.md (Part 5)
 
 ### For Architects
 

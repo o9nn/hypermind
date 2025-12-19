@@ -78,6 +78,66 @@ struct PerformanceMetrics {
     int active_sessions;
 };
 
+/* Network Communication */
+struct NetworkEnvelope {
+    std::string source_address;
+    std::string dest_address;
+    Message* message;
+    unsigned int sequence_number;
+    unsigned int checksum;
+    long long timestamp;
+};
+
+class NetworkInterface {
+/* Handles network communication between distributed reactors */
+private:
+    std::string _local_address;
+    std::unordered_map<std::string, int> _reactor_addresses;
+    unsigned int _next_sequence_number;
+    
+public:
+    NetworkInterface(const std::string& local_address) 
+        : _local_address(local_address), _next_sequence_number(0) {}
+    
+    unsigned int calculate_checksum(const NetworkEnvelope& envelope) {
+        // Simple checksum implementation
+        // In production, use CRC32 or similar
+        unsigned int checksum = 0;
+        checksum ^= std::hash<std::string>{}(envelope.source_address);
+        checksum ^= std::hash<std::string>{}(envelope.dest_address);
+        checksum ^= envelope.sequence_number;
+        return checksum;
+    }
+    
+    bool send_network_message(Message* msg, const std::string& dest_address) {
+        NetworkEnvelope envelope;
+        envelope.source_address = _local_address;
+        envelope.dest_address = dest_address;
+        envelope.message = msg;
+        envelope.sequence_number = _next_sequence_number++;
+        envelope.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+        envelope.checksum = calculate_checksum(envelope);
+        
+        // Serialize and send over network
+        // Implementation depends on network library (e.g., ZeroMQ, gRPC)
+        return true;
+    }
+    
+    bool receive_network_message(NetworkEnvelope& envelope) {
+        // Deserialize from network
+        // Validate checksum
+        unsigned int expected_checksum = calculate_checksum(envelope);
+        if (envelope.checksum != expected_checksum) {
+            return false; // Checksum validation failed
+        }
+        return true;
+    }
+    
+    void register_reactor(const std::string& address, int reactor_id) {
+        _reactor_addresses[address] = reactor_id;
+    }
+};
+
 class Command {
 /* Commands are sent to NeuralReactors to perform async actions. */
     std::vector<CommandProxy*> _next;

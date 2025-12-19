@@ -239,3 +239,161 @@ This agent has expertise in:
 - Queue theory and priority scheduling
 - C++ design patterns (Command, Proxy, Reactor)
 - Performance optimization for high-throughput systems
+
+## Usage Guidelines
+
+### How to Invoke This Agent
+
+Use natural language prompts that reference HyperMind architecture, formal specifications, or implementation questions:
+
+**Example Prompts:**
+- "Explain how NeuralReactor processes messages from multiple queues"
+- "Help me implement a new command type for gradient computation"
+- "What are the invariants for the SessionState schema in data_model.zpp?"
+- "How does the hierarchical rank system (worker/manager/director) distribute work?"
+- "Review my implementation of GPU event handling for correctness"
+- "Generate test cases from the CreateSession operation specification"
+
+### Best Practices
+
+**For Architecture Questions:**
+1. Reference specific components (NeuralReactor, SessionInitiator, etc.)
+2. Ask about relationships between components
+3. Request Mermaid diagrams for visualization
+
+**For Formal Specifications:**
+1. Reference specific .zpp files and schema names
+2. Ask about preconditions, postconditions, and invariants
+3. Request verification of operation correctness
+
+**For Implementation:**
+1. Provide context about what you're building
+2. Reference relevant formal specifications
+3. Ask about integration with existing components
+
+**For Debugging:**
+1. Describe the observed behavior
+2. Share relevant code snippets
+3. Ask about invariants that might be violated
+
+## Practical Examples
+
+### Example 1: Understanding Message Flow
+
+**Prompt:** "How does a FeedForward command propagate through the system?"
+
+**Expected Response:** The agent will explain:
+- SessionInitiator creates session and enqueues initial FeedForward command
+- NeuralReactor receives command in internal/external queue
+- Command execution accesses session state from hash map
+- GPU operations submitted asynchronously if needed
+- Next commands chained via CommandProxy
+- State transitions tracked in SessionState
+
+### Example 2: Implementing New Command Type
+
+**Prompt:** "Help me implement a BackPropagation command following the formal specification"
+
+**Expected Response:** The agent will:
+- Reference Command schema in data_model.zpp
+- Show how FeedForward is specified
+- Provide skeletal implementation matching formal spec
+- Explain preconditions and postconditions
+- Guide on testing against invariants
+
+### Example 3: Debugging Distributed Session Issue
+
+**Prompt:** "Session state shows WAITING_GPU but GPU events aren't being processed. What invariants should I check?"
+
+**Expected Response:** The agent will:
+- Reference system_state.zpp NeuralReactor schema
+- Explain GPU event stream handling in operations.zpp
+- List relevant invariants (pending_operations count, GPU queue ordering)
+- Suggest debugging steps based on formal specification
+- Point to integration contracts in integrations.zpp
+
+### Example 4: Performance Optimization
+
+**Prompt:** "What's the best way to optimize NDArray caching in NeuralReactor?"
+
+**Expected Response:** The agent will:
+- Reference NDArrayMap in data_model.zpp
+- Explain hash-based O(1) lookup design
+- Discuss memory management strategies
+- Consider GPU memory constraints from integrations.zpp
+- Suggest profiling specific hash map operations
+
+## Integration with Other Tools
+
+### With Z++ Verification Tools
+- Use formal specifications to generate proof obligations
+- Verify invariant preservation with theorem provers
+- Model check distributed properties
+
+### With Testing Frameworks
+- Derive test cases from operation preconditions/postconditions
+- Use invariants as test assertions
+- Generate property-based tests from schemas
+
+### With Documentation Generators
+- Extract architecture diagrams from specs
+- Generate API documentation from formal contracts
+- Create implementation guides from operation specs
+
+### With Development Tools
+- Use agent for code review against formal specifications
+- Validate changes preserve system invariants
+- Generate skeletal implementations from schemas
+
+## Quick Reference
+
+### Key Files
+- `hypermind.hpp` - C++ implementation
+- `docs/architecture_overview.md` - Visual architecture with Mermaid
+- `specs/data_model.zpp` - Core data structures
+- `specs/system_state.zpp` - System state and invariants
+- `specs/operations.zpp` - State-changing operations
+- `specs/integrations.zpp` - External system contracts
+
+### Common Schemas
+- `NDArray` - Multi-dimensional arrays
+- `SessionState` - Session execution tracking
+- `NeuralReactor` - Reactor actor state
+- `Command` - Asynchronous operation base
+- `Message` - Inter-actor communication
+- `Event` - External system events
+
+### Common Operations
+- `CreateSession` - Start new computation
+- `EnqueueCommand` - Add command to queue
+- `ExecuteFeedForward` - Neural network computation
+- `SendMessage` - Inter-reactor communication
+- `HandleGPUEvent` - Process GPU completion
+- `HandleDatabaseEvent` - Process DB results
+
+## Troubleshooting
+
+### "I can't find the formal specification for X"
+- Check which .zpp file contains related concepts
+- Search for schema names in data_model.zpp first
+- Operations are in operations.zpp
+- External integrations are in integrations.zpp
+
+### "The formal specification seems inconsistent with code"
+- Specifications are prescriptive (how it should be)
+- Code may be partial implementation
+- Use specs to guide implementation completion
+- Report inconsistencies for specification updates
+
+### "I need more detailed examples"
+- Reference docs/architecture_overview.md for visual diagrams
+- Check operation schemas for input/output examples
+- Look at preconditions for valid usage scenarios
+- See postconditions for expected results
+
+### "How do I verify my implementation?"
+- Extract invariants from relevant schemas
+- Write assertions checking invariants
+- Use preconditions as input validation
+- Use postconditions as output validation
+- Reference integration contracts for external systems

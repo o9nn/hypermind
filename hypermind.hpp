@@ -1,3 +1,25 @@
+/**
+ * HyperMind - Distributed Neural Network Framework
+ * 
+ * A sophisticated framework built on actor-based concurrency and reactive streams
+ * for high-performance, scalable deep learning computation.
+ * 
+ * DEVELOPMENT STATUS: Active Development
+ * 
+ * This header file contains:
+ * - Core data structures and types (COMPLETE)
+ * - Command interface definitions (COMPLETE)
+ * - Error handling infrastructure (COMPLETE)
+ * - GPU/Database integration interfaces (STUB - needs implementation)
+ * - Network communication infrastructure (STUB - needs implementation)
+ * - Command execute() methods (STUB - needs implementation)
+ * 
+ * See SPECIFICATION_SUMMARY.md for complete formal specifications.
+ * See docs/implementation_guide.md for implementation priorities.
+ * See CONTRIBUTING.md for contribution guidelines.
+ * 
+ * License: MIT (see LICENSE file)
+ */
 
 class LayerProxy {
 /* A proxy for a Layer. */
@@ -110,6 +132,12 @@ public:
     }
     
     bool send_network_message(Message* msg, const std::string& dest_address) {
+        // STUB: Network serialization not yet implemented
+        // TODO: Serialize message to wire format (e.g., Protocol Buffers, MessagePack)
+        // TODO: Send over actual network transport (ZeroMQ, gRPC, raw TCP/IP)
+        // TODO: Handle network errors and retries
+        // Reference: specs/integrations.zpp SendNetworkMessage operation
+        
         NetworkEnvelope envelope;
         envelope.source_address = _local_address;
         envelope.dest_address = dest_address;
@@ -118,13 +146,17 @@ public:
         envelope.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
         envelope.checksum = calculate_checksum(envelope);
         
-        // Serialize and send over network
-        // Implementation depends on network library (e.g., ZeroMQ, gRPC)
+        // When implemented, return actual send status
         return true;
     }
     
     bool receive_network_message(NetworkEnvelope& envelope) {
-        // Deserialize from network
+        // STUB: Network deserialization not yet implemented
+        // TODO: Receive data from network transport
+        // TODO: Deserialize from wire format to NetworkEnvelope
+        // TODO: Handle network errors and timeouts
+        // Reference: specs/integrations.zpp ReceiveNetworkMessage operation
+        
         // Validate checksum
         unsigned int expected_checksum = calculate_checksum(envelope);
         if (envelope.checksum != expected_checksum) {
@@ -161,9 +193,11 @@ class BackPropagation : public Command {
     char _rank; // worker, manager, director
     NDArray* _gradient; // gradient from next layer
     void execute(NeuralReactor& neural_reactor) {
-        // Compute gradients for this layer
-        // Update weights and biases
-        // Propagate gradient to previous layer
+        // TODO: Implement backpropagation computation
+        // Compute gradients for this layer using chain rule
+        // Update weights and biases with learning rate
+        // Propagate gradient to previous layer via message
+        // Reference: specs/operations.zpp for formal specification
     };
 };
 
@@ -174,9 +208,10 @@ class WeightUpdate : public Command {
     NDArray* _bias_gradient;
     float _learning_rate;
     void execute(NeuralReactor& neural_reactor) {
-        // Apply weight updates using gradient descent
+        // TODO: Implement weight update with gradient descent
         // weights = weights - learning_rate * weight_gradient
         // bias = bias - learning_rate * bias_gradient
+        // Reference: specs/operations.zpp for formal specification
     };
 };
 
@@ -186,8 +221,10 @@ class GradientComputation : public Command {
     NDArray* _activation;
     NDArray* _output_gradient;
     void execute(NeuralReactor& neural_reactor) {
-        // Compute local gradients
-        // Chain rule application
+        // TODO: Implement local gradient computation
+        // Apply chain rule for gradient computation
+        // Compute activation function derivatives
+        // Reference: specs/operations.zpp for formal specification
     };
 };
 
@@ -274,13 +311,19 @@ class NeuralReactor : public ThreadActor {
     };
     
     void submit_gpu_operation(GPUOperation* op) {
-        // Submit to GPU stream
-        // Increment pending operations
+        // STUB: GPU integration not yet implemented
+        // TODO: Implement CUDA/OpenCL submission
+        // TODO: Manage GPU memory allocation and transfers
+        // TODO: Submit computation kernel to GPU stream
+        // Reference: specs/integrations.zpp SubmitGPUComputation operation
     };
     
     void submit_database_query(DatabaseQuery* query) {
-        // Submit to PostgreSQL pipe
-        // Increment pending operations
+        // STUB: Database integration not yet implemented
+        // TODO: Implement PostgreSQL async query submission
+        // TODO: Use connection pooling for efficiency
+        // TODO: Submit to PostgreSQL pipe for async processing
+        // Reference: specs/integrations.zpp SubmitDatabaseOperation operation
     };
     
     PerformanceMetrics get_metrics() const {

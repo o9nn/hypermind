@@ -21,6 +21,36 @@
  * License: MIT (see LICENSE file)
  */
 
+#ifndef HYPERMIND_HPP
+#define HYPERMIND_HPP
+
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <cstddef>
+#include <chrono>
+#include <exception>
+
+// Forward declarations
+class Command;
+class NeuralReactor;
+class Message;
+class Event;
+class NDArray;
+class ValueArray;
+
+// Base class for thread-based actors
+class ThreadActor {
+/* Base class for actors that run in their own thread */
+public:
+    virtual void run() = 0;
+    virtual ~ThreadActor() = default;
+};
+
+// Type aliases
+using hash_t = size_t;
+using ID = int;
+
 class LayerProxy {
 /* A proxy for a Layer. */
 
@@ -172,8 +202,11 @@ public:
 
 class Command {
 /* Commands are sent to NeuralReactors to perform async actions. */
+protected:
     std::vector<CommandProxy*> _next;
-    virtual void execute(NeuralReactor* neural_reactor) = 0;
+public:
+    virtual void execute(NeuralReactor& neural_reactor) = 0;
+    virtual ~Command() = default;
 };
 
 class FeedForward : public Command {
@@ -181,10 +214,11 @@ class FeedForward : public Command {
     LayerProxy _this_layer;
     char _rank; // worker, manager, director
     void execute(NeuralReactor& neural_reactor) {
-        neural_reactor.
-        neural_reactor.put(msg);
-        neural_reactor.push(this);
-    };
+        // TODO: Implement feedforward computation
+        // neural_reactor.process_layer(_this_layer);
+        // neural_reactor.send_activation_message();
+        // Reference: specs/operations.zpp ExecuteFeedForward operation
+    }
 };
 
 class BackPropagation : public Command {
@@ -198,7 +232,7 @@ class BackPropagation : public Command {
         // Update weights and biases with learning rate
         // Propagate gradient to previous layer via message
         // Reference: specs/operations.zpp for formal specification
-    };
+    }
 };
 
 class WeightUpdate : public Command {
@@ -212,7 +246,7 @@ class WeightUpdate : public Command {
         // weights = weights - learning_rate * weight_gradient
         // bias = bias - learning_rate * bias_gradient
         // Reference: specs/operations.zpp for formal specification
-    };
+    }
 };
 
 class GradientComputation : public Command {
@@ -225,7 +259,7 @@ class GradientComputation : public Command {
         // Apply chain rule for gradient computation
         // Compute activation function derivatives
         // Reference: specs/operations.zpp for formal specification
-    };
+    }
 };
 
 class SessionInitiator : public ThreadActor {
@@ -258,7 +292,9 @@ class NeuralReactor : public ThreadActor {
     
     SessionState* getSessionState(ID session_id) {
         /* Get session state from session state map */
-        return ss;
+        // TODO: Implement hash lookup in _session_map
+        (void)session_id; // Suppress unused warning
+        return nullptr; // STUB
     };
     
     void handle_activate(ID session_id, ValueArray* sum_array) {
@@ -267,7 +303,7 @@ class NeuralReactor : public ThreadActor {
     
     void handle_command(Command* cmd) {
         try {
-            cmd->execute(this);
+            cmd->execute(*this);
             _metrics.successful_operations++;
         } catch (const std::exception& e) {
             _metrics.failed_operations++;
@@ -281,24 +317,30 @@ class NeuralReactor : public ThreadActor {
     };
     
     void handle_message(Message* msg) {
-        std::string msg_type = msg->getType();
+        // TODO: Implement message type dispatch
+        // std::string msg_type = msg->getType();
         // message handler
+        (void)msg; // Suppress unused warning
     };
     
     void handle_gpu_event(Event* event) {
-        GPUResult* result = static_cast<GPUResult*>(event->getData());
-        if (!result->success) {
-            handle_error(result->error);
-        }
+        // TODO: Implement GPU event processing
+        // GPUResult* result = static_cast<GPUResult*>(event->getData());
+        // if (!result->success) {
+        //     handle_error(result->error);
+        // }
         // Process GPU completion
+        (void)event; // Suppress unused warning
     };
     
     void handle_database_event(Event* event) {
-        DatabaseResult* result = static_cast<DatabaseResult*>(event->getData());
-        if (!result->success) {
-            handle_error(result->error);
-        }
+        // TODO: Implement database event processing
+        // DatabaseResult* result = static_cast<DatabaseResult*>(event->getData());
+        // if (!result->success) {
+        //     handle_error(result->error);
+        // }
         // Process database result
+        (void)event; // Suppress unused warning
     };
     
     void handle_error(const IntegrationError& error) {
@@ -331,12 +373,16 @@ class NeuralReactor : public ThreadActor {
     };
     
     void run() {
-        Message* msg = _get_queue.get(no_wait);
-        if (!_cmd_queue.empty()) {
-            Command* cmd = _cmd_queue.get(no_wait);
-        };
-        if (!_gpu_queue_empty) {
-            Event* event = _gpu_queue.get(no_wait);
-        };
+        // TODO: Implement main reactor event loop
+        // Process messages from internal, external, GPU, and database queues
+        // Message* msg = _get_queue.get(no_wait);
+        // if (!_cmd_queue.empty()) {
+        //     Command* cmd = _cmd_queue.get(no_wait);
+        // };
+        // if (!_gpu_queue_empty) {
+        //     Event* event = _gpu_queue.get(no_wait);
+        // };
     };
 };
+
+#endif // HYPERMIND_HPP

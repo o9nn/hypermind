@@ -213,7 +213,7 @@ class FeedForward : public Command {
 /* Prototype feedforward command */
     LayerProxy _this_layer;
     char _rank; // worker, manager, director
-    void execute(NeuralReactor& neural_reactor) {
+    void execute(NeuralReactor& neural_reactor) override {
         // TODO: Implement feedforward computation
         // neural_reactor.process_layer(_this_layer);
         // neural_reactor.send_activation_message();
@@ -226,7 +226,7 @@ class BackPropagation : public Command {
     LayerProxy _this_layer;
     char _rank; // worker, manager, director
     NDArray* _gradient; // gradient from next layer
-    void execute(NeuralReactor& neural_reactor) {
+    void execute(NeuralReactor& neural_reactor) override {
         // TODO: Implement backpropagation computation
         // Compute gradients for this layer using chain rule
         // Update weights and biases with learning rate
@@ -241,7 +241,7 @@ class WeightUpdate : public Command {
     NDArray* _weight_gradient;
     NDArray* _bias_gradient;
     float _learning_rate;
-    void execute(NeuralReactor& neural_reactor) {
+    void execute(NeuralReactor& neural_reactor) override {
         // TODO: Implement weight update with gradient descent
         // weights = weights - learning_rate * weight_gradient
         // bias = bias - learning_rate * bias_gradient
@@ -254,7 +254,7 @@ class GradientComputation : public Command {
     LayerProxy _this_layer;
     NDArray* _activation;
     NDArray* _output_gradient;
-    void execute(NeuralReactor& neural_reactor) {
+    void execute(NeuralReactor& neural_reactor) override {
         // TODO: Implement local gradient computation
         // Apply chain rule for gradient computation
         // Compute activation function derivatives
@@ -358,6 +358,11 @@ class NeuralReactor : public ThreadActor {
         // TODO: Manage GPU memory allocation and transfers
         // TODO: Submit computation kernel to GPU stream
         // Reference: specs/integrations.zpp SubmitGPUComputation operation
+        if (!op) {
+            handle_error(IntegrationError{ERROR, "Null GPU operation pointer", "GPU", -1});
+            return;
+        }
+        (void)op; // Suppress unused warning
     };
     
     void submit_database_query(DatabaseQuery* query) {
@@ -366,6 +371,11 @@ class NeuralReactor : public ThreadActor {
         // TODO: Use connection pooling for efficiency
         // TODO: Submit to PostgreSQL pipe for async processing
         // Reference: specs/integrations.zpp SubmitDatabaseOperation operation
+        if (!query) {
+            handle_error(IntegrationError{ERROR, "Null database query pointer", "Database", -1});
+            return;
+        }
+        (void)query; // Suppress unused warning
     };
     
     PerformanceMetrics get_metrics() const {
